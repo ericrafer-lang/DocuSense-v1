@@ -1,0 +1,6 @@
+@DocuSense.Api_HostAddress = http://localhost:5230
+
+GET {{DocuSense.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

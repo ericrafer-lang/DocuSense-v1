@@ -1,0 +1,5 @@
+Graph Neural Networks (GNNs) have emerged as a powerful tool for learning on structured data, offering significant advantages over traditional approaches. Message-passing architectures generalise convolution to irregular domains by aggregating over a node's neighbourhood. This section provides a comprehensive overview of the key developments in the field over the past decade.
+
+In our study of 214 parallel corpora, BLEU scores correlated only weakly (r = 0.31) with human-annotated fidelity. The accuracy of automated systems is often overstated in evaluations. We reproduce the benchmark on OGB-arxiv and report a 1.8-point deviation.
+
+Furthermore, the interplay between form and content serves to underscore the thematic concerns of the period. Rossellini's location shooting in Rome, Open City was a practical constraint before it became an aesthetic choice. Overall, these results demonstrate the importance of considering multiple environmental factors in a comprehensive manner.
