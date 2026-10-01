@@ -1,4 +1,7 @@
+using System.Text;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using DocuSense.Api.Data;
 using DocuSense.Api.Services;
 
@@ -13,7 +16,7 @@ builder.Services.AddControllers()
             System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
     });
 
-// CORS — allow the frontend (ports 8080, 3000, 5173, etc.)
+// CORS — allow the frontend (any origin is fine for local thesis dev)
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
@@ -25,9 +28,42 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Database: Supabase PostgreSQL (or fallback to local SQLite if password not set)
+// ── JWT Authentication ────────────────────────────────────────────────────────
+// Reads key/issuer/audience from appsettings so they can be set via env vars in
+// production without code changes.  Falls back to a development-safe default.
+
+var jwtKey = builder.Configuration["Jwt:Key"]
+    ?? "DocuSense_SuperSecret_SecurityKey_2026_ThesisProject_MustBeLongEnough!";
+var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "DocuSense";
+var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "DocuSenseClient";
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtIssuer,
+            ValidateAudience = true,
+            ValidAudience = jwtAudience,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+            ClockSkew = TimeSpan.FromSeconds(30),
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+// ── Database ──────────────────────────────────────────────────────────────────
+// Use Supabase PostgreSQL when a real connection string is configured.
+// Fall back to a local SQLite file so the app runs out-of-the-box without any
+// external dependencies. The SQLite fallback is intentional — do not remove it.
+
 var supabaseConn = builder.Configuration.GetConnectionString("Supabase");
-var usePostgres = !string.IsNullOrWhiteSpace(supabaseConn) && !supabaseConn.Contains("[YOUR-PASSWORD]");
+var usePostgres = !string.IsNullOrWhiteSpace(supabaseConn)
+    && !supabaseConn.Contains("[YOUR-PASSWORD]");
 
 if (usePostgres)
 {
@@ -41,17 +77,22 @@ else
         options.UseSqlite($"Data Source={dbPath}"));
 }
 
-// Application services
+// ── Application services ──────────────────────────────────────────────────────
+
 builder.Services.AddScoped<DocumentReaderService>();
 builder.Services.AddScoped<AnalysisService>();
+builder.Services.AddSingleton<JwtTokenService>();
 
-// Allow large uploads (50 MB)
+// ── Upload limits — 100 MB matching PRD business rule ─────────────────────────
+
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 {
-    o.MultipartBodyLengthLimit = 50 * 1024 * 1024;
+    o.MultipartBodyLengthLimit = 100L * 1024 * 1024;
 });
 builder.WebHost.ConfigureKestrel(k =>
-    k.Limits.MaxRequestBodySize = 50 * 1024 * 1024);
+    k.Limits.MaxRequestBodySize = 100L * 1024 * 1024);
+
+// ── Logging ───────────────────────────────────────────────────────────────────
 
 builder.Services.AddLogging(logging =>
 {
@@ -61,59 +102,38 @@ builder.Services.AddLogging(logging =>
 
 var app = builder.Build();
 
-// ── Database setup ────────────────────────────────────────────────────────────
+// ── Database migration ────────────────────────────────────────────────────────
+// Use EF Core's migration-based approach — no hand-written SQL DDL here.
+// EnsureCreated is used for SQLite (dev) since it's simpler and safe when there
+// are no pending schema changes; Migrate() is used for PostgreSQL (production).
+
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    if (!db.Database.IsNpgsql())
+    if (db.Database.IsNpgsql())
     {
-        db.Database.EnsureCreated();   // Creates SQLite file + tables on first run
-        db.Database.ExecuteSqlRaw(@"
-            CREATE TABLE IF NOT EXISTS Users (
-                Id INTEGER PRIMARY KEY AUTOINCREMENT,
-                Name TEXT NOT NULL,
-                Email TEXT NOT NULL UNIQUE,
-                PasswordHash TEXT NOT NULL,
-                Role TEXT NOT NULL,
-                CreatedAt TEXT NOT NULL
-            );");
+        db.Database.Migrate();
     }
     else
     {
-        // PostgreSQL (Supabase): ensure required tables exist
-        db.Database.ExecuteSqlRaw(@"
-            CREATE TABLE IF NOT EXISTS public.""Users"" (
-                ""Id""           SERIAL PRIMARY KEY,
-                ""Name""         TEXT NOT NULL,
-                ""Email""        TEXT NOT NULL UNIQUE,
-                ""PasswordHash"" TEXT NOT NULL,
-                ""Role""         TEXT NOT NULL,
-                ""CreatedAt""    TIMESTAMP NOT NULL
-            );");
-
-        db.Database.ExecuteSqlRaw(@"
-            CREATE TABLE IF NOT EXISTS public.""Scans"" (
-                ""Id""           TEXT NOT NULL PRIMARY KEY,
-                ""Title""        TEXT NOT NULL DEFAULT '',
-                ""Author""       TEXT NOT NULL DEFAULT '',
-                ""Words""        INTEGER NOT NULL DEFAULT 0,
-                ""Draft""        TEXT NOT NULL DEFAULT 'uploaded',
-                ""Date""         TEXT NOT NULL DEFAULT '',
-                ""Overall""      DOUBLE PRECISION NOT NULL DEFAULT 0,
-                ""Flagged""      INTEGER NOT NULL DEFAULT 0,
-                ""Summary""      TEXT NOT NULL DEFAULT '',
-                ""LayersJson""   TEXT NOT NULL DEFAULT '[]',
-                ""PassagesJson"" TEXT NOT NULL DEFAULT '[]'
-            );");
+        // SQLite dev path: EnsureCreated() creates the schema from the model if
+        // the file doesn't yet exist.  Delete docusense.db to reset dev data.
+        db.Database.EnsureCreated();
     }
 }
 
-// ── Middleware ────────────────────────────────────────────────────────────────
+// ── Middleware pipeline ───────────────────────────────────────────────────────
+
 app.UseRouting();
 app.UseCors();
+
+// Authentication + Authorization must come BEFORE MapControllers
+app.UseAuthentication();
+app.UseAuthorization();
+
 app.MapControllers();
 
 // Health check
-app.MapGet("/", () => Results.Ok(new { service = "DocuSense API", version = "1.0" }));
+app.MapGet("/", () => Results.Ok(new { service = "DocuSense API", version = "1.1" }));
 
 app.Run();

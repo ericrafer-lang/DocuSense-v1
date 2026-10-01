@@ -124,7 +124,7 @@ export async function getResult(documentId: number, _token?: string): Promise<De
   };
 }
 
-export async function resetPassword(input: { email: string; newPassword: string }) {
+export async function resetPassword(input: { token: string; newPassword: string }) {
   const res = await fetch(`${API_BASE_URL}/api/auth/reset-password`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -141,9 +141,7 @@ export type AdminUserDto = {
   createdAt: string;
 };
 
-// Known backend gap: the API's AdminController does not actually verify the caller's role
-// server-side yet — it only checks the role client-side once real auth enforcement is added on
-// the backend (tracked separately). Real protection depends on that backend fix landing too.
+// GET /api/admin/users — requires Admin role JWT
 export async function getUsers(token?: string): Promise<AdminUserDto[]> {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -165,11 +163,7 @@ export async function deleteUser(id: number, token?: string): Promise<{ message?
   return handle<{ message?: string } | null>(res);
 }
 
-/**
- * Request password reset instructions.
- * NOTE: The backend endpoint POST /api/auth/forgot-password is not yet implemented on the
- * API side, so calling this will return 404 until the backend endpoint exists.
- */
+// POST /api/auth/forgot-password
 export async function requestPasswordReset(input: { email: string }) {
   const res = await fetch(`${API_BASE_URL}/api/auth/forgot-password`, {
     method: "POST",

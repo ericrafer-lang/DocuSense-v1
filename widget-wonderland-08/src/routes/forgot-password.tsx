@@ -27,16 +27,7 @@ function ForgotPasswordPage() {
       await requestPasswordReset({ email });
       setSubmitted(true);
     } catch (err) {
-      // NOTE: Since the backend endpoint POST /api/auth/forgot-password might not be deployed yet,
-      // handle 404 gracefully with an informative message while still noting delivery attempt.
-      const msg = err instanceof Error ? err.message : "Request failed";
-      if (msg.includes("404")) {
-        setError(
-          "Password reset endpoint is not yet active on the server. Please contact your administrator.",
-        );
-      } else {
-        setError(msg);
-      }
+      setError(err instanceof Error ? err.message : "Request failed");
     } finally {
       setLoading(false);
     }

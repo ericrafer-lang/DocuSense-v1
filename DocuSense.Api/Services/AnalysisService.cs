@@ -23,7 +23,7 @@ public partial class AnalysisService
         var stylometric = AnalyzeStylometric(sentences, doc.Text);
         var semantic = AnalyzeSemantic(sentences, doc.Text);
         var metadata = AnalyzeMetadata(doc);
-        var classifier = AnalyzeClassifier(stylometric.Score, semantic.Score, metadata.Score);
+        var classifier = AnalyzeClassifier(sentences, doc.Text);
 
         var layers = new List<LayerResult> { stylometric, semantic, metadata, classifier };
 
@@ -217,22 +217,84 @@ public partial class AnalysisService
     }
 
     // ── Layer 04 · Classifier ─────────────────────────────────────────────────
+    //
+    // This layer examines signals that the other three layers do NOT use:
+    //   Signal A — AI-signature phrase density (documented LLM tell-phrases, per 1000 words)
+    //   Signal B — contraction rate (human informal writing uses more contractions;
+    //              very low rate in otherwise casual-register text is a mild AI signal)
+    //   Signal C — sentence-starter repetition (burstiness proxy; distinct from
+    //              stylometric's sentence-LENGTH variance — looks at repeated opening words)
+    //
+    // This is a rule-based heuristic classifier, the same category of technique early
+    // tools like the original GPTZero used. It is NOT a trained model and is less
+    // accurate than one, but it is a genuinely independent fourth signal.
 
-    private static LayerResult AnalyzeClassifier(double stylometric, double semantic, double metadata)
+    // A documented set of phrases disproportionately common in LLM output.
+    private static readonly string[] AiSignaturePhrases =
+    [
+        "in conclusion", "it is important to note", "it's important to note",
+        "furthermore,", "moreover,", "overall,", "in summary", "in today's world",
+        "plays a crucial role", "plays a vital role", "in the realm of",
+        "delve into", "it is worth noting", "a testament to",
+        "in essence", "underscores the importance", "navigate the complexities",
+        "in the ever-evolving", "has emerged as a", "offers a comprehensive",
+        "a comprehensive overview", "significant implications",
+    ];
+
+    // Common English contractions used more frequently in human-written text.
+    private static readonly string[] Contractions =
+    [
+        "don't", "can't", "won't", "isn't", "aren't", "it's", "i'm", "we're",
+        "you're", "they're", "didn't", "doesn't", "wasn't", "weren't", "couldn't",
+        "shouldn't", "wouldn't", "i've", "we've", "there's", "that's",
+    ];
+
+    private static LayerResult AnalyzeClassifier(List<string> sentences, string text)
     {
-        // Ensemble: emphasize the two highest signals
-        var scores = new[] { stylometric, semantic, metadata };
-        Array.Sort(scores);
-        // Weighted: top scorer × 0.5 + second × 0.35 + lowest × 0.15
-        var ensemble = scores[2] * 0.50 + scores[1] * 0.35 + scores[0] * 0.15;
-        var score = Math.Round(Math.Clamp(ensemble, 0, 1), 2);
+        if (sentences.Count == 0)
+        {
+            return new LayerResult
+            {
+                Key = "classifier", Index = "04", Name = "Classifier",
+                Score = 0, Note = "No text to classify.",
+            };
+        }
+
+        var lowerText = text.ToLowerInvariant();
+        var wordCount = Math.Max(Regex.Matches(text, @"[A-Za-z']+").Count, 1);
+
+        // Signal A: AI-signature phrase density (per 1000 words)
+        var phraseHits = AiSignaturePhrases.Count(p => lowerText.Contains(p));
+        var phraseDensity = (double)phraseHits / wordCount * 1000.0;
+
+        // Signal B: contraction rate — low contractions in a casual-register doc = mild AI signal
+        var contractionHits = Contractions.Count(c => lowerText.Contains(c));
+        var contractionRate = (double)contractionHits / wordCount * 1000.0;
+        // Absence of contractions (contractionRate near 0) contributes positively to AI score;
+        // capped so a formally written human paper isn't unfairly penalised.
+        var contractionSignal = Math.Clamp(Math.Max(0, 8.0 - contractionRate) / 8.0, 0, 0.4);
+
+        // Signal C: sentence-starter repetition (burstiness proxy)
+        var starters = sentences
+            .Select(s => s.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                          .FirstOrDefault()?.ToLowerInvariant() ?? "")
+            .Where(w => w.Length > 0)
+            .ToList();
+        var starterRepeatRatio = starters.Count > 1
+            ? 1.0 - ((double)starters.Distinct().Count() / starters.Count)
+            : 0;
+
+        // Combine: phrase density is the strongest signal, starter repetition secondary,
+        // contraction absence is weakest (formal human writing can also lack contractions).
+        var rawScore = phraseDensity * 0.07 + starterRepeatRatio * 0.35 + contractionSignal * 0.25;
+        var score = Math.Round(Math.Clamp(rawScore, 0, 1), 2);
 
         var note = score switch
         {
-            > 0.70 => "The ensemble model leans machine-generated with moderate confidence. Multiple signals converge.",
-            > 0.50 => "The classifier sits above the decision boundary, with localized spikes in some sections.",
-            > 0.35 => "The model sits near its decision boundary. Treat as inconclusive without manual review.",
-            _ => "The trained model leans human for the document as a whole.",
+            > 0.70 => "High AI-phrase density and low sentence-starter diversity detected. Pattern is consistent with machine-generated text.",
+            > 0.45 => "The classifier detects above-average AI-signature phrase use and limited opener variety. Treat as one signal, not a verdict.",
+            > 0.25 => "Some AI-signature phrases present but overall pattern is mixed. Near the decision boundary — manual review advised.",
+            _ => "Low AI-phrase density, normal contraction use, and varied sentence starters — consistent with human-written prose.",
         };
 
         return new LayerResult

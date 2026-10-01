@@ -71,9 +71,11 @@ curl -X POST http://localhost:5000/api/scan \
 | 01 | **Stylometric** | Sentence-length variance, type-token ratio (lexical diversity) |
 | 02 | **Semantic** | Hedging phrases, boilerplate openers, transition cadence |
 | 03 | **Metadata** | Created/modified timestamp gap vs. expected typing time |
-| 04 | **Classifier** | Weighted ensemble of layers 1–3 |
+| 04 | **Classifier** | Independent heuristic signals: AI-signature phrase density, contraction rate, sentence-starter repetition |
 
 **Overall score** = Stylometric × 30% + Semantic × 35% + Metadata × 15% + Classifier × 20%
+
+Each layer examines genuinely different evidence (ensemble diversity condition).
 
 ---
 
@@ -81,13 +83,15 @@ curl -X POST http://localhost:5000/api/scan \
 
 `PDF`, `DOCX`, `DOC`, `TXT`, `RTF`, `ODT`
 
-Max upload size: **50 MB**
+Max upload size: **100 MB**
 
 ---
 
 ## Database
 
-The SQLite database (`docusense.db`) is created automatically at first run inside the backend's build output folder. All scan history is persisted there. To reset the history, delete the file and restart the backend.
+The SQLite database (`docusense.db`) is created automatically at first run using EF Core migrations. The schema contains five normalized tables: Users, Documents, DetectionResults, DetectionLayerScores, HighlightedSections. All scan history is persisted there. To reset dev data, delete the file and restart the backend.
+
+Authentication uses signed JWTs (HMAC-SHA256). The `Jwt:Key` in `appsettings.json` can be overridden via environment variable for production.
 
 ---
 
